@@ -15,6 +15,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
 use crate::agent::{Executor, Output};
+use crate::audit::{Audit, Event};
 use crate::policy::Policy;
 
 /// What Rust sends to the bridge, one JSON object per line.
@@ -76,16 +77,19 @@ pub struct Sandbox {
     lines: Lines<BufReader<ChildStdout>>,
     next_id: u64,
     policy: Policy,
+    audit: Audit,
 }
 
 impl Sandbox {
     /// Starts the bridge and waits until its machine has booted, with
     /// `krate` mounted read-only at /src and copied to /work, the toolchain
-    /// disk attached, and the network asking `policy`.
+    /// disk attached, and the network asking `policy`. Every network
+    /// decision goes into `audit`.
     pub async fn start(
         krate: &Path,
         toolbox: &Path,
         policy: Policy,
+        audit: Audit,
     ) -> Result<Self> {
         let mut bridge = Command::new("node")
             .arg("--experimental-wasm-jspi")
@@ -111,6 +115,7 @@ impl Sandbox {
             lines: BufReader::new(stdout).lines(),
             next_id: 0,
             policy,
+            audit,
         };
         match sandbox.answer(0).await? {
             FromBridge::Ready => Ok(sandbox),
@@ -138,10 +143,15 @@ impl Sandbox {
                     let allow = self.policy.allows(&name);
                     let verdict = if allow { "allowed" } else { "refused" };
                     println!("          [net] lookup {name}: {verdict}");
+                    self.audit.record(Event::Lookup {
+                        name,
+                        allowed: allow,
+                    })?;
                     self.send(&ToBridge::Answer { question, allow }).await?;
                 }
                 FromBridge::Refused { host, port } => {
                     println!("          [net] connect {host}:{port}: refused");
+                    self.audit.record(Event::ConnectRefused { host, port })?;
                 }
                 FromBridge::Ready if id == 0 => return Ok(FromBridge::Ready),
                 answer @ (FromBridge::Result { id: got, .. }

@@ -9,6 +9,7 @@
 //!                                        one command in the sandbox, no agent
 
 mod agent;
+mod audit;
 mod canary;
 mod host;
 mod openai;
@@ -17,6 +18,7 @@ mod review;
 mod sandbox;
 
 use agent::Executor;
+use audit::{Audit, Event};
 use policy::Policy;
 
 use std::path::{Path, PathBuf};
@@ -111,8 +113,10 @@ async fn main() -> Result<()> {
             policy,
         } => {
             check_toolbox(&toolbox)?;
+            let audit = Audit::create(&log_path("sh")?)?;
             let mut sandbox =
-                sandbox::Sandbox::start(&repo, &toolbox, policy.into()).await?;
+                sandbox::Sandbox::start(&repo, &toolbox, policy.into(), audit)
+                    .await?;
             for command in commands {
                 println!("$ {command}");
                 let started = Instant::now();
@@ -133,29 +137,70 @@ async fn main() -> Result<()> {
             let key = std::env::var("OPENAI_API_KEY")
                 .context("OPENAI_API_KEY is not set")?;
             let llm = openai::OpenAi::new(key);
+            let log = log_path("fix")?;
+            let audit = Audit::create(&log)?;
+            let policy: Policy = policy.into();
+            audit.record(Event::Start {
+                repo: repo.display().to_string(),
+                allowed_hosts: policy.allowed_hosts.clone(),
+                timeout_secs: policy.command_timeout.as_secs(),
+                max_output_bytes: policy.max_output_bytes,
+                memory_mib: policy.memory_mib,
+            })?;
             if on_host {
                 let run = prepare_run(&repo)?;
                 let shell =
                     host::HostShell::new(run.join("work"), run.join("home"));
-                agent::Agent::new(llm, shell, max_steps).fix().await?;
+                agent::Agent::new(llm, shell, max_steps, audit)
+                    .fix()
+                    .await?;
                 return Ok(());
             }
             check_toolbox(&toolbox)?;
             let started = Instant::now();
             let sandbox =
-                sandbox::Sandbox::start(&repo, &toolbox, policy.into()).await?;
+                sandbox::Sandbox::start(&repo, &toolbox, policy, audit.clone())
+                    .await?;
             let ms = started.elapsed().as_millis();
             println!("sandbox ready in {ms} ms");
-            let mut sandbox =
-                agent::Agent::new(llm, sandbox, max_steps).fix().await?;
-            let patch = review::diff(&repo, &sandbox.changes().await?)?;
-            let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-            let file = format!("target/fix-{stamp}.diff");
-            std::fs::write(&file, &patch)?;
-            println!("\nthe agent's changes ({file}), not applied:\n{patch}");
+            let agent =
+                agent::Agent::new(llm, sandbox, max_steps, audit.clone());
+            let mut sandbox = agent.fix().await?;
+            let changes = sandbox.changes().await?;
+            // The machine is gone before anyone decides anything.
+            drop(sandbox);
+            let files = review::changed_files(&repo, &changes);
+            audit.record(Event::Changes { files })?;
+
+            let patch = review::diff(&repo, &changes);
+            let patch_file = log.with_extension("diff");
+            std::fs::write(&patch_file, &patch)?;
+            review::report(&audit.events(), max_steps);
+            println!(" audit log      {}", log.display());
+            println!(" patch          {}\n", patch_file.display());
+            print!("{patch}");
+            if patch.is_empty() {
+                println!("nothing to apply");
+                return Ok(());
+            }
+            let question = format!("\napply this patch to {}?", repo.display());
+            let applied = review::ask(&question)?;
+            audit.record(Event::Decision { applied })?;
+            if applied {
+                review::apply(&repo, &changes)?;
+            } else {
+                println!("not applied");
+            }
             Ok(())
         }
     }
+}
+
+/// `target/audit/<kind>-<seconds since 1970>.jsonl`, a new name each run.
+fn log_path(kind: &str) -> Result<PathBuf> {
+    let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    std::fs::create_dir_all("target/audit")?;
+    Ok(PathBuf::from(format!("target/audit/{kind}-{stamp}.jsonl")))
 }
 
 fn check_toolbox(toolbox: &Path) -> Result<()> {

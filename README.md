@@ -29,5 +29,9 @@ $ cargo run -- sh --timeout-secs 3 'while :; do :; done' 'echo still alive'   # 
 | 4 | The code in, the fix out, and the tools | [lessons/04-code-in-fix-out.md](lessons/04-code-in-fix-out.md) |
 | 5 | Network: Rust answers every DNS question | [lessons/05-network.md](lessons/05-network.md) |
 | 6 | Limits | [lessons/06-limits.md](lessons/06-limits.md) |
+| 7 | Audit log and review | [lessons/07-audit-and-review.md](lessons/07-audit-and-review.md) |
+
+Each `fix` run writes an audit log and the agent's patch to `target/audit/`, prints a review, and applies the
+patch to the real crate only if you answer `y`.
 
 Every run on screen is a real run; its output is quoted in the write-up.

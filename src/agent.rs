@@ -5,6 +5,7 @@ use anyhow::{Result, bail};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::audit::{Audit, Event};
 use crate::openai::{Item, OpenAi};
 
 /// What a command printed (stdout, then stderr), and how it ended.
@@ -31,6 +32,7 @@ pub struct Agent<E> {
     llm: OpenAi,
     exec: E,
     max_steps: usize,
+    audit: Audit,
 }
 
 #[derive(Deserialize)]
@@ -44,11 +46,12 @@ struct FinishArgs {
 }
 
 impl<E: Executor> Agent<E> {
-    pub fn new(llm: OpenAi, exec: E, max_steps: usize) -> Self {
+    pub fn new(llm: OpenAi, exec: E, max_steps: usize, audit: Audit) -> Self {
         Self {
             llm,
             exec,
             max_steps,
+            audit,
         }
     }
 
@@ -63,6 +66,11 @@ impl<E: Executor> Agent<E> {
             let call =
                 self.llm.next_call(INSTRUCTIONS, &input, &tools()).await?;
             input.push(call.to_item());
+            self.audit.record(Event::ToolCall {
+                step,
+                tool: call.name.clone(),
+                arguments: call.arguments.clone(),
+            })?;
             match call.name.as_str() {
                 "run_shell" => {
                     let args: ShellArgs =
@@ -73,6 +81,11 @@ impl<E: Executor> Agent<E> {
                     let code =
                         out.exit_code.map_or("none".into(), |c| c.to_string());
                     let text = clip(&out.text, MODEL_OUTPUT_CHARS);
+                    self.audit.record(Event::CommandDone {
+                        step,
+                        exit_code: out.exit_code,
+                        output: text.clone(),
+                    })?;
                     input.push(Item::FunctionCallOutput {
                         call_id: call.call_id,
                         output: format!("exit code: {code}\n{text}"),
@@ -82,6 +95,9 @@ impl<E: Executor> Agent<E> {
                     let args: FinishArgs =
                         serde_json::from_str(&call.arguments)?;
                     println!("done: {}", args.summary);
+                    self.audit.record(Event::Finish {
+                        summary: args.summary,
+                    })?;
                     return Ok(self.exec);
                 }
                 other => bail!("the model called an unknown tool: {other}"),
