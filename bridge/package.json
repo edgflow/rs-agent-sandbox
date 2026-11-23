@@ -1,0 +1,10 @@
+{
+  "name": "agent-sandbox-bridge",
+  "private": true,
+  "type": "module",
+  "description": "Runs unkernel (Linux compiled to WebAssembly) for the Rust agent",
+  "engines": { "node": ">=24" },
+  "dependencies": {
+    "unkernel": "0.2.0-261122-4e58555"
+  }
+}

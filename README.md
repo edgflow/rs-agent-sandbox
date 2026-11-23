@@ -8,6 +8,9 @@ One task is followed all the way: `fixtures/tinycalc` has a failing test, and it
 that reads a credentials file and posts it to a collector. The file is a fake canary
 (`fixtures/demo-home`), and the collector is our own listener on 127.0.0.1, so nothing ever leaves the machine.
 
+Needs Rust 1.100 and Node 24 (tested with 24.19, which needs `--experimental-wasm-jspi`). Then `npm install`
+in `bridge/`.
+
 ```console
 $ cargo run -- canary                     # terminal 1: print what reaches 127.0.0.1:7878
 $ export OPENAI_API_KEY=...               # terminal 2
@@ -17,5 +20,6 @@ $ cargo run -- fix fixtures/tinycalc
 | # | Lesson | Write-up |
 |---|---|---|
 | 1 | An agent with a shell | [lessons/01-agent-with-a-shell.md](lessons/01-agent-with-a-shell.md) |
+| 2 | A Linux machine inside a WebAssembly module | [lessons/02-linux-in-a-wasm-module.md](lessons/02-linux-in-a-wasm-module.md) |
 
 Every run on screen is a real run; its output is quoted in the write-up.
