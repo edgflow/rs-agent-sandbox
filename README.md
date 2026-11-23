@@ -16,6 +16,8 @@ $ cargo run -- canary                     # terminal 1: print what reaches 127.0
 $ export OPENAI_API_KEY=...               # terminal 2
 $ cargo run -- fix fixtures/tinycalc             # the agent's commands run in the sandbox
 $ cargo run -- fix fixtures/tinycalc --on-host   # ... on this machine (Lesson 1)
+$ cargo run -- fix fixtures/tinycalc --allow-host dl-cdn.alpinelinux.org   # may install packages
+$ cargo run -- sh 'cargo build'                  # one command in the sandbox, no agent
 ```
 
 | # | Lesson | Write-up |
@@ -24,5 +26,6 @@ $ cargo run -- fix fixtures/tinycalc --on-host   # ... on this machine (Lesson 1
 | 2 | A Linux machine inside a WebAssembly module | [lessons/02-linux-in-a-wasm-module.md](lessons/02-linux-in-a-wasm-module.md) |
 | 3 | The bridge and the `Sandbox` type | [lessons/03-bridge-and-sandbox.md](lessons/03-bridge-and-sandbox.md) |
 | 4 | The code in, the fix out, and the tools | [lessons/04-code-in-fix-out.md](lessons/04-code-in-fix-out.md) |
+| 5 | Network: Rust answers every DNS question | [lessons/05-network.md](lessons/05-network.md) |
 
 Every run on screen is a real run; its output is quoted in the write-up.

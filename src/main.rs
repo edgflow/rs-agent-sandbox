@@ -5,13 +5,19 @@
 //!   cargo run -- fix fixtures/tinycalc   the agent fixes the failing test,
 //!                                        its commands run in the sandbox
 //!   cargo run -- fix fixtures/tinycalc --on-host    ... on this Mac
+//!   cargo run -- sh 'wget -O- http://example.com' --allow-host example.com
+//!                                        one command in the sandbox, no agent
 
 mod agent;
 mod canary;
 mod host;
 mod openai;
+mod policy;
 mod review;
 mod sandbox;
+
+use agent::Executor;
+use policy::Policy;
 
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -49,6 +55,21 @@ enum Cmd {
         /// sandbox.
         #[arg(long)]
         on_host: bool,
+        /// A host name the sandbox may look up and connect to (repeatable).
+        /// None by default: no network at all.
+        #[arg(long = "allow-host")]
+        allow_hosts: Vec<String>,
+    },
+    /// Run one command in the sandbox, without the agent.
+    Sh {
+        command: String,
+        /// The crate mounted at /src and copied to /work.
+        #[arg(long, default_value = "fixtures/tinycalc")]
+        repo: PathBuf,
+        #[arg(long, default_value = "bridge/toolbox.img")]
+        toolbox: PathBuf,
+        #[arg(long = "allow-host")]
+        allow_hosts: Vec<String>,
     },
 }
 
@@ -56,11 +77,27 @@ enum Cmd {
 async fn main() -> Result<()> {
     match Cli::parse().command {
         Cmd::Canary { port } => canary::listen(port),
+        Cmd::Sh {
+            command,
+            repo,
+            toolbox,
+            allow_hosts,
+        } => {
+            check_toolbox(&toolbox)?;
+            let policy = Policy::new(allow_hosts);
+            let mut sandbox =
+                sandbox::Sandbox::start(&repo, &toolbox, policy).await?;
+            let out = sandbox.run(&command).await?;
+            print!("{}", out.text);
+            println!("exit code: {:?}", out.exit_code);
+            Ok(())
+        }
         Cmd::Fix {
             repo,
             toolbox,
             max_steps,
             on_host,
+            allow_hosts,
         } => {
             let key = std::env::var("OPENAI_API_KEY")
                 .context("OPENAI_API_KEY is not set")?;
@@ -72,14 +109,11 @@ async fn main() -> Result<()> {
                 agent::Agent::new(llm, shell, max_steps).fix().await?;
                 return Ok(());
             }
-            if !toolbox.exists() {
-                bail!(
-                    "{} is missing: run bridge/make-toolbox.sh",
-                    toolbox.display()
-                );
-            }
+            check_toolbox(&toolbox)?;
+            let policy = Policy::new(allow_hosts);
             let started = Instant::now();
-            let sandbox = sandbox::Sandbox::start(&repo, &toolbox).await?;
+            let sandbox =
+                sandbox::Sandbox::start(&repo, &toolbox, policy).await?;
             let ms = started.elapsed().as_millis();
             println!("sandbox ready in {ms} ms");
             let mut sandbox =
@@ -92,6 +126,16 @@ async fn main() -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn check_toolbox(toolbox: &Path) -> Result<()> {
+    if !toolbox.exists() {
+        bail!(
+            "{} is missing: run bridge/make-toolbox.sh",
+            toolbox.display()
+        );
+    }
+    Ok(())
 }
 
 /// A fresh copy of the crate and of the demo home for every run, so the

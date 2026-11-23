@@ -1,7 +1,8 @@
 //! The agent's commands run in a Linux machine inside a WebAssembly module,
 //! through the bridge (`bridge/bridge.mjs`). Lesson 3: the machine and the
 //! protocol. Lesson 4: the crate in (read-only), the work folder, the
-//! toolchain disk, and the changes back out.
+//! toolchain disk, and the changes back out. Lesson 5: every DNS question
+//! from the guest is answered here, by the policy.
 
 use std::path::Path;
 use std::process::Stdio;
@@ -12,6 +13,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
 use crate::agent::{Executor, Output};
+use crate::policy::Policy;
 
 /// What Rust sends to the bridge, one JSON object per line.
 #[derive(Serialize)]
@@ -19,9 +21,11 @@ use crate::agent::{Executor, Output};
 enum ToBridge<'a> {
     Exec { id: u64, command: &'a str },
     Changes { id: u64 },
+    Answer { question: u64, allow: bool },
 }
 
-/// What the bridge sends back.
+/// What the bridge sends back: answers to our requests (with their `id`),
+/// and the bridge's own questions and reports.
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum FromBridge {
@@ -34,6 +38,14 @@ enum FromBridge {
     Changes {
         id: u64,
         files: Vec<Changed>,
+    },
+    Dns {
+        question: u64,
+        name: String,
+    },
+    Refused {
+        host: String,
+        port: u16,
     },
 }
 
@@ -51,13 +63,18 @@ pub struct Sandbox {
     stdin: ChildStdin,
     lines: Lines<BufReader<ChildStdout>>,
     next_id: u64,
+    policy: Policy,
 }
 
 impl Sandbox {
     /// Starts the bridge and waits until its machine has booted, with
-    /// `krate` mounted read-only at /src and copied to /work, and the
-    /// toolchain disk attached.
-    pub async fn start(krate: &Path, toolbox: &Path) -> Result<Self> {
+    /// `krate` mounted read-only at /src and copied to /work, the toolchain
+    /// disk attached, and the network asking `policy`.
+    pub async fn start(
+        krate: &Path,
+        toolbox: &Path,
+        policy: Policy,
+    ) -> Result<Self> {
         let mut bridge = Command::new("node")
             .arg("--experimental-wasm-jspi")
             .arg("bridge/bridge.mjs")
@@ -80,8 +97,9 @@ impl Sandbox {
             stdin,
             lines: BufReader::new(stdout).lines(),
             next_id: 0,
+            policy,
         };
-        match sandbox.receive().await? {
+        match sandbox.answer(0).await? {
             FromBridge::Ready => Ok(sandbox),
             _ => bail!("the bridge answered before ready"),
         }
@@ -92,12 +110,34 @@ impl Sandbox {
     pub async fn changes(&mut self) -> Result<Vec<Changed>> {
         let id = self.fresh_id();
         self.send(&ToBridge::Changes { id }).await?;
+        match self.answer(id).await? {
+            FromBridge::Changes { files, .. } => Ok(files),
+            _ => bail!("the bridge sent the wrong answer"),
+        }
+    }
+
+    /// Reads until the answer to request `id` arrives (`Ready` counts as the
+    /// answer to 0), answering the bridge's questions on the way.
+    async fn answer(&mut self, id: u64) -> Result<FromBridge> {
         loop {
-            if let FromBridge::Changes { id: answer, files } =
-                self.receive().await?
-                && answer == id
-            {
-                return Ok(files);
+            match self.receive().await? {
+                FromBridge::Dns { question, name } => {
+                    let allow = self.policy.allows(&name);
+                    let verdict = if allow { "allowed" } else { "refused" };
+                    println!("          [net] lookup {name}: {verdict}");
+                    self.send(&ToBridge::Answer { question, allow }).await?;
+                }
+                FromBridge::Refused { host, port } => {
+                    println!("          [net] connect {host}:{port}: refused");
+                }
+                FromBridge::Ready if id == 0 => return Ok(FromBridge::Ready),
+                answer @ (FromBridge::Result { id: got, .. }
+                | FromBridge::Changes { id: got, .. })
+                    if got == id =>
+                {
+                    return Ok(answer);
+                }
+                _ => {}
             }
         }
     }
@@ -125,19 +165,14 @@ impl Executor for Sandbox {
     async fn run(&mut self, command: &str) -> Result<Output> {
         let id = self.fresh_id();
         self.send(&ToBridge::Exec { id, command }).await?;
-        loop {
-            if let FromBridge::Result {
-                id: answer,
+        match self.answer(id).await? {
+            FromBridge::Result {
+                exit_code, output, ..
+            } => Ok(Output {
                 exit_code,
-                output,
-            } = self.receive().await?
-                && answer == id
-            {
-                return Ok(Output {
-                    exit_code,
-                    text: output,
-                });
-            }
+                text: output,
+            }),
+            _ => bail!("the bridge sent the wrong answer"),
         }
     }
 }

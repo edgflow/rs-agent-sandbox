@@ -6,15 +6,19 @@
 // One JSON object per line. Rust -> bridge (stdin):
 //   {"type":"exec","id":1,"command":"ls"}
 //   {"type":"changes","id":2}
+//   {"type":"answer","question":1,"allow":false}
 // bridge -> Rust (stdout): {"type":"ready"} once the machine is up, then
 //   {"type":"result","id":1,"exit_code":0,"output":"..."}
 //   {"type":"changes","id":2,"files":[{"path":"src/lib.rs","content":"..."}]}
+//   {"type":"dns","question":1,"name":"example.com"}   (a question)
+//   {"type":"refused","host":"1.2.3.4","port":80}      (a report)
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import {
   MemoryFs,
   createKernel,
+  directBackend,
   fetchDistro,
   nodeFs,
   openDisk,
@@ -23,6 +27,48 @@ import {
 // stdout carries protocol lines only: anything else goes to stderr.
 console.log = console.error;
 const send = (message) => process.stdout.write(JSON.stringify(message) + '\n');
+
+// Questions to Rust: each waits for the answer with its number.
+const waiting = new Map();
+let lastQuestion = 0;
+const ask = (message) =>
+  new Promise((resolve) => {
+    const question = ++lastQuestion;
+    waiting.set(question, resolve);
+    send({ ...message, question });
+  });
+
+// The guest's network. Every DNS lookup is a question to Rust; a TCP
+// connection is allowed only to an address an allowed lookup returned.
+const internet = directBackend();
+const allowedAddresses = new Set();
+const net = {
+  async lookup(name) {
+    const { allow } = await ask({ type: 'dns', name });
+    if (!allow)
+      throw Object.assign(new Error('refused'), { code: 'ENOTFOUND' });
+    const addresses = await internet.lookup(name);
+    addresses.forEach((address) => allowedAddresses.add(address));
+    return addresses;
+  },
+  connect(target, events) {
+    if (allowedAddresses.has(target.host))
+      return internet.connect(target, events);
+    send({ type: 'refused', host: target.host, port: target.port });
+    queueMicrotask(() => events.onClose(new Error('refused by policy')));
+    return {
+      write() {},
+      end() {},
+      destroy() {},
+      pause() {},
+      resume() {},
+      buffered: 0,
+    };
+  },
+  close() {
+    internet.close?.();
+  },
+};
 
 const [crate, toolbox] = process.argv.slice(2);
 
@@ -49,6 +95,7 @@ work.onChange((change) => {
 const vm = await createKernel({
   distro: await fetchDistro('alpine'),
   memoryMiB: 1024,
+  net,
   // rust and cargo, made once; writes go to memory and vanish at exit
   disks: [await openDisk(toolbox, { snapshot: true })],
   mounts: {
@@ -94,6 +141,9 @@ for await (const line of createInterface({ input: process.stdin })) {
         content: work.exists(path) ? work.readText(path) : null,
       }));
     send({ type: 'changes', id: message.id, files });
+  } else if (message.type === 'answer') {
+    waiting.get(message.question)?.(message);
+    waiting.delete(message.question);
   }
 }
 

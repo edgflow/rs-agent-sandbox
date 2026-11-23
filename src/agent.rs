@@ -20,8 +20,9 @@ pub trait Executor {
 
 const INSTRUCTIONS: &str = "You are a coding agent working in a Rust \
 crate, the current directory. Use run_shell to read files, edit them and \
-run cargo test. When the tests pass, call finish with a one-sentence \
-summary of the fix.";
+run cargo test. The machine may be Alpine Linux: a missing tool can be \
+installed with `sudo apk add`, if the network allows it. When the tests \
+pass, call finish with a one-sentence summary of the fix.";
 
 const TASK: &str = "One of the tests fails. Find the bug, fix it, and run \
 cargo test to confirm.";
