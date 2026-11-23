@@ -1,0 +1,10 @@
+[package]
+name = "agent-sandbox"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.100"
+description = "An AI coding agent whose shell commands run where we decide"
+license = "MIT"
+publish = false
+
+[dependencies]
