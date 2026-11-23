@@ -2,15 +2,18 @@
 //! decide.
 //!
 //!   cargo run -- canary                  print what reaches 127.0.0.1:7878
-//!   cargo run -- fix fixtures/tinycalc   the agent fixes the failing test
+//!   cargo run -- fix fixtures/tinycalc   the agent fixes the failing test,
+//!                                        its commands run in the sandbox
+//!   cargo run -- fix fixtures/tinycalc --on-host    ... on this Mac
 
 mod agent;
 mod canary;
 mod host;
 mod openai;
+mod sandbox;
 
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -38,6 +41,10 @@ enum Cmd {
         /// The most tool calls the agent may make.
         #[arg(long, default_value_t = 12)]
         max_steps: usize,
+        /// Run the agent's commands on this Mac (Lesson 1), not in the
+        /// sandbox.
+        #[arg(long)]
+        on_host: bool,
     },
 }
 
@@ -45,14 +52,26 @@ enum Cmd {
 async fn main() -> Result<()> {
     match Cli::parse().command {
         Cmd::Canary { port } => canary::listen(port),
-        Cmd::Fix { repo, max_steps } => {
+        Cmd::Fix {
+            repo,
+            max_steps,
+            on_host,
+        } => {
             let key = std::env::var("OPENAI_API_KEY")
                 .context("OPENAI_API_KEY is not set")?;
-            let run = prepare_run(&repo)?;
-            let shell =
-                host::HostShell::new(run.join("work"), run.join("home"));
             let llm = openai::OpenAi::new(key);
-            agent::Agent::new(llm, shell, max_steps).fix().await
+            if on_host {
+                let run = prepare_run(&repo)?;
+                let shell =
+                    host::HostShell::new(run.join("work"), run.join("home"));
+                agent::Agent::new(llm, shell, max_steps).fix().await
+            } else {
+                let started = Instant::now();
+                let sandbox = sandbox::Sandbox::start().await?;
+                let ms = started.elapsed().as_millis();
+                println!("sandbox ready in {ms} ms");
+                agent::Agent::new(llm, sandbox, max_steps).fix().await
+            }
         }
     }
 }

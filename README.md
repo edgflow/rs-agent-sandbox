@@ -14,12 +14,14 @@ in `bridge/`.
 ```console
 $ cargo run -- canary                     # terminal 1: print what reaches 127.0.0.1:7878
 $ export OPENAI_API_KEY=...               # terminal 2
-$ cargo run -- fix fixtures/tinycalc
+$ cargo run -- fix fixtures/tinycalc             # the agent's commands run in the sandbox
+$ cargo run -- fix fixtures/tinycalc --on-host   # ... on this machine (Lesson 1)
 ```
 
 | # | Lesson | Write-up |
 |---|---|---|
 | 1 | An agent with a shell | [lessons/01-agent-with-a-shell.md](lessons/01-agent-with-a-shell.md) |
 | 2 | A Linux machine inside a WebAssembly module | [lessons/02-linux-in-a-wasm-module.md](lessons/02-linux-in-a-wasm-module.md) |
+| 3 | The bridge and the `Sandbox` type | [lessons/03-bridge-and-sandbox.md](lessons/03-bridge-and-sandbox.md) |
 
 Every run on screen is a real run; its output is quoted in the write-up.
