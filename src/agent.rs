@@ -51,7 +51,9 @@ impl<E: Executor> Agent<E> {
         }
     }
 
-    pub async fn fix(mut self) -> Result<()> {
+    /// Runs the task to the model's `finish`, then hands the executor back,
+    /// so the caller can collect what the agent left in it.
+    pub async fn fix(mut self) -> Result<E> {
         let mut input = vec![Item::Message {
             role: "user",
             content: TASK.into(),
@@ -78,7 +80,7 @@ impl<E: Executor> Agent<E> {
                     let args: FinishArgs =
                         serde_json::from_str(&call.arguments)?;
                     println!("done: {}", args.summary);
-                    return Ok(());
+                    return Ok(self.exec);
                 }
                 other => bail!("the model called an unknown tool: {other}"),
             }

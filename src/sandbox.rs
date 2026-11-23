@@ -1,6 +1,9 @@
-//! Lesson 3: the agent's commands run in a Linux machine inside a
-//! WebAssembly module, through the bridge (`bridge/bridge.mjs`).
+//! The agent's commands run in a Linux machine inside a WebAssembly module,
+//! through the bridge (`bridge/bridge.mjs`). Lesson 3: the machine and the
+//! protocol. Lesson 4: the crate in (read-only), the work folder, the
+//! toolchain disk, and the changes back out.
 
+use std::path::Path;
 use std::process::Stdio;
 
 use anyhow::{Context, Result, bail};
@@ -15,6 +18,7 @@ use crate::agent::{Executor, Output};
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ToBridge<'a> {
     Exec { id: u64, command: &'a str },
+    Changes { id: u64 },
 }
 
 /// What the bridge sends back.
@@ -27,6 +31,18 @@ enum FromBridge {
         exit_code: Option<i32>,
         output: String,
     },
+    Changes {
+        id: u64,
+        files: Vec<Changed>,
+    },
+}
+
+/// A file the agent created, changed or removed in its work folder:
+/// its path in the crate, and its text now (`None`: removed).
+#[derive(Deserialize)]
+pub struct Changed {
+    pub path: String,
+    pub content: Option<String>,
 }
 
 pub struct Sandbox {
@@ -38,11 +54,15 @@ pub struct Sandbox {
 }
 
 impl Sandbox {
-    /// Starts the bridge and waits until its machine has booted.
-    pub async fn start() -> Result<Self> {
+    /// Starts the bridge and waits until its machine has booted, with
+    /// `krate` mounted read-only at /src and copied to /work, and the
+    /// toolchain disk attached.
+    pub async fn start(krate: &Path, toolbox: &Path) -> Result<Self> {
         let mut bridge = Command::new("node")
             .arg("--experimental-wasm-jspi")
             .arg("bridge/bridge.mjs")
+            .arg(krate.canonicalize()?)
+            .arg(toolbox.canonicalize()?)
             // The bridge does not need our API key either: only PATH (to
             // find node) and HOME (where unkernel caches the Alpine image).
             .env_clear()
@@ -63,10 +83,28 @@ impl Sandbox {
         };
         match sandbox.receive().await? {
             FromBridge::Ready => Ok(sandbox),
-            FromBridge::Result { .. } => {
-                bail!("the bridge answered before ready")
+            _ => bail!("the bridge answered before ready"),
+        }
+    }
+
+    /// Every file the agent changed in /work, read by the host. Nothing
+    /// that runs in the guest is asked: not `diff`, not `git`.
+    pub async fn changes(&mut self) -> Result<Vec<Changed>> {
+        let id = self.fresh_id();
+        self.send(&ToBridge::Changes { id }).await?;
+        loop {
+            if let FromBridge::Changes { id: answer, files } =
+                self.receive().await?
+                && answer == id
+            {
+                return Ok(files);
             }
         }
+    }
+
+    fn fresh_id(&mut self) -> u64 {
+        self.next_id += 1;
+        self.next_id
     }
 
     async fn send(&mut self, message: &ToBridge<'_>) -> Result<()> {
@@ -85,8 +123,7 @@ impl Sandbox {
 
 impl Executor for Sandbox {
     async fn run(&mut self, command: &str) -> Result<Output> {
-        self.next_id += 1;
-        let id = self.next_id;
+        let id = self.fresh_id();
         self.send(&ToBridge::Exec { id, command }).await?;
         loop {
             if let FromBridge::Result {

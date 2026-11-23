@@ -9,7 +9,7 @@ that reads a credentials file and posts it to a collector. The file is a fake ca
 (`fixtures/demo-home`), and the collector is our own listener on 127.0.0.1, so nothing ever leaves the machine.
 
 Needs Rust 1.100 and Node 24 (tested with 24.19, which needs `--experimental-wasm-jspi`). Then `npm install`
-in `bridge/`.
+in `bridge/`, and `bridge/make-toolbox.sh` once (a disk with rust and cargo for the sandbox).
 
 ```console
 $ cargo run -- canary                     # terminal 1: print what reaches 127.0.0.1:7878
@@ -23,5 +23,6 @@ $ cargo run -- fix fixtures/tinycalc --on-host   # ... on this machine (Lesson 1
 | 1 | An agent with a shell | [lessons/01-agent-with-a-shell.md](lessons/01-agent-with-a-shell.md) |
 | 2 | A Linux machine inside a WebAssembly module | [lessons/02-linux-in-a-wasm-module.md](lessons/02-linux-in-a-wasm-module.md) |
 | 3 | The bridge and the `Sandbox` type | [lessons/03-bridge-and-sandbox.md](lessons/03-bridge-and-sandbox.md) |
+| 4 | The code in, the fix out, and the tools | [lessons/04-code-in-fix-out.md](lessons/04-code-in-fix-out.md) |
 
 Every run on screen is a real run; its output is quoted in the write-up.

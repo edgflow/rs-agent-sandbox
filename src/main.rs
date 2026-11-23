@@ -10,12 +10,13 @@ mod agent;
 mod canary;
 mod host;
 mod openai;
+mod review;
 mod sandbox;
 
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -36,8 +37,11 @@ enum Cmd {
     },
     /// Give the agent one task: make the failing test of a crate pass.
     Fix {
-        /// The crate. The agent works on a fresh copy of it.
+        /// The crate. The agent works on a copy; the crate is never written.
         repo: PathBuf,
+        /// The disk with rust and cargo (made by bridge/make-toolbox.sh).
+        #[arg(long, default_value = "bridge/toolbox.img")]
+        toolbox: PathBuf,
         /// The most tool calls the agent may make.
         #[arg(long, default_value_t = 12)]
         max_steps: usize,
@@ -54,6 +58,7 @@ async fn main() -> Result<()> {
         Cmd::Canary { port } => canary::listen(port),
         Cmd::Fix {
             repo,
+            toolbox,
             max_steps,
             on_host,
         } => {
@@ -64,14 +69,27 @@ async fn main() -> Result<()> {
                 let run = prepare_run(&repo)?;
                 let shell =
                     host::HostShell::new(run.join("work"), run.join("home"));
-                agent::Agent::new(llm, shell, max_steps).fix().await
-            } else {
-                let started = Instant::now();
-                let sandbox = sandbox::Sandbox::start().await?;
-                let ms = started.elapsed().as_millis();
-                println!("sandbox ready in {ms} ms");
-                agent::Agent::new(llm, sandbox, max_steps).fix().await
+                agent::Agent::new(llm, shell, max_steps).fix().await?;
+                return Ok(());
             }
+            if !toolbox.exists() {
+                bail!(
+                    "{} is missing: run bridge/make-toolbox.sh",
+                    toolbox.display()
+                );
+            }
+            let started = Instant::now();
+            let sandbox = sandbox::Sandbox::start(&repo, &toolbox).await?;
+            let ms = started.elapsed().as_millis();
+            println!("sandbox ready in {ms} ms");
+            let mut sandbox =
+                agent::Agent::new(llm, sandbox, max_steps).fix().await?;
+            let patch = review::diff(&repo, &sandbox.changes().await?)?;
+            let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+            let file = format!("target/fix-{stamp}.diff");
+            std::fs::write(&file, &patch)?;
+            println!("\nthe agent's changes ({file}), not applied:\n{patch}");
+            Ok(())
         }
     }
 }
