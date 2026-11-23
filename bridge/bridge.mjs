@@ -1,10 +1,12 @@
 // The bridge: runs unkernel for the Rust program, because unkernel's SDK is
 // a JavaScript library. It decides nothing; it does what Rust asks.
 //
-//   node --experimental-wasm-jspi bridge.mjs <crate folder> <toolbox.img>
+//   node --experimental-wasm-jspi bridge.mjs \
+//        <crate folder> <toolbox.img> <memory MiB>
 //
 // One JSON object per line. Rust -> bridge (stdin):
-//   {"type":"exec","id":1,"command":"ls"}
+//   {"type":"exec","id":1,"command":"ls","timeout_ms":60000,
+//    "max_output":1048576}
 //   {"type":"changes","id":2}
 //   {"type":"answer","question":1,"allow":false}
 // bridge -> Rust (stdout): {"type":"ready"} once the machine is up, then
@@ -70,7 +72,7 @@ const net = {
   },
 };
 
-const [crate, toolbox] = process.argv.slice(2);
+const [crate, toolbox, memoryMiB] = process.argv.slice(2);
 
 // The agent's work folder: an in-memory copy of the crate (without build
 // output). We see every change the guest makes to it.
@@ -94,7 +96,7 @@ work.onChange((change) => {
 
 const vm = await createKernel({
   distro: await fetchDistro('alpine'),
-  memoryMiB: 1024,
+  memoryMiB: Number(memoryMiB), // all the memory the guest will ever have
   net,
   // rust and cargo, made once; writes go to memory and vanish at exit
   disks: [await openDisk(toolbox, { snapshot: true })],
@@ -110,25 +112,33 @@ send({ type: 'ready' });
 for await (const line of createInterface({ input: process.stdin })) {
   const message = JSON.parse(line);
   if (message.type === 'exec') {
+    const { id, command, timeout_ms, max_output } = message;
     // Not awaited: the bridge keeps reading while the command runs.
-    vm.exec('sh', ['-c', message.command], {
+    vm.exec('sh', ['-c', command], {
       cwd: '/work',
       // build output stays in the guest
       env: { CARGO_TARGET_DIR: '/tmp/target' },
+      signal: AbortSignal.timeout(timeout_ms), // too long: SIGKILL
+      maxBuffer: max_output, // too much output: SIGKILL
     }).then(
       (r) =>
         send({
           type: 'result',
-          id: message.id,
+          id,
           exit_code: r.exitCode,
           output: r.stdout + r.stderr,
         }),
       (e) =>
         send({
           type: 'result',
-          id: message.id,
+          id,
           exit_code: null,
-          output: `bridge: ${e.message}`,
+          output:
+            e.code === 'ABORTED'
+              ? `killed: still running after ${timeout_ms / 1000} s\n`
+              : e.code === 'ENOBUFS'
+                ? `killed: printed more than ${max_output} bytes\n`
+                : `bridge: ${e.message}\n`,
         }),
     );
   } else if (message.type === 'changes') {

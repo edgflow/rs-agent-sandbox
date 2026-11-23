@@ -72,9 +72,10 @@ impl<E: Executor> Agent<E> {
                     show(&out);
                     let code =
                         out.exit_code.map_or("none".into(), |c| c.to_string());
+                    let text = clip(&out.text, MODEL_OUTPUT_CHARS);
                     input.push(Item::FunctionCallOutput {
                         call_id: call.call_id,
-                        output: format!("exit code: {code}\n{}", out.text),
+                        output: format!("exit code: {code}\n{text}"),
                     });
                 }
                 "finish" => {
@@ -129,5 +130,40 @@ fn show(out: &Output) {
     }
     if lines.len() > 12 {
         println!("          ... {} more lines", lines.len() - 12);
+    }
+}
+
+/// The most of one command's output the model gets back.
+const MODEL_OUTPUT_CHARS: usize = 4000;
+
+/// `text` if it is short enough; otherwise its start and its end, with a
+/// note of how much was cut between them (the end is where test results
+/// and errors usually are).
+fn clip(text: &str, max: usize) -> String {
+    let count = text.chars().count();
+    if count <= max {
+        return text.to_string();
+    }
+    let half = max / 2;
+    let head: String = text.chars().take(half).collect();
+    let tail: String = text.chars().skip(count - half).collect();
+    let cut = count - 2 * half;
+    format!("{head}\n[... {cut} characters cut ...]\n{tail}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clip;
+
+    #[test]
+    fn short_output_is_kept_whole() {
+        assert_eq!(clip("all of it", 20), "all of it");
+    }
+
+    #[test]
+    fn long_output_keeps_its_start_and_end() {
+        let text = format!("start{}end", "x".repeat(100));
+        let clipped = clip(&text, 10);
+        assert_eq!(clipped, "start\n[... 98 characters cut ...]\nxxend");
     }
 }

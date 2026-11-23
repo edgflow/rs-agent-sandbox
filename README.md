@@ -18,6 +18,7 @@ $ cargo run -- fix fixtures/tinycalc             # the agent's commands run in t
 $ cargo run -- fix fixtures/tinycalc --on-host   # ... on this machine (Lesson 1)
 $ cargo run -- fix fixtures/tinycalc --allow-host dl-cdn.alpinelinux.org   # may install packages
 $ cargo run -- sh 'cargo build'                  # one command in the sandbox, no agent
+$ cargo run -- sh --timeout-secs 3 'while :; do :; done' 'echo still alive'   # limits: see --help
 ```
 
 | # | Lesson | Write-up |
@@ -27,5 +28,6 @@ $ cargo run -- sh 'cargo build'                  # one command in the sandbox, n
 | 3 | The bridge and the `Sandbox` type | [lessons/03-bridge-and-sandbox.md](lessons/03-bridge-and-sandbox.md) |
 | 4 | The code in, the fix out, and the tools | [lessons/04-code-in-fix-out.md](lessons/04-code-in-fix-out.md) |
 | 5 | Network: Rust answers every DNS question | [lessons/05-network.md](lessons/05-network.md) |
+| 6 | Limits | [lessons/06-limits.md](lessons/06-limits.md) |
 
 Every run on screen is a real run; its output is quoted in the write-up.

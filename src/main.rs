@@ -20,10 +20,10 @@ use agent::Executor;
 use policy::Policy;
 
 use std::path::{Path, PathBuf};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(
@@ -55,22 +55,49 @@ enum Cmd {
         /// sandbox.
         #[arg(long)]
         on_host: bool,
-        /// A host name the sandbox may look up and connect to (repeatable).
-        /// None by default: no network at all.
-        #[arg(long = "allow-host")]
-        allow_hosts: Vec<String>,
+        #[command(flatten)]
+        policy: PolicyArgs,
     },
-    /// Run one command in the sandbox, without the agent.
+    /// Run commands in the sandbox one after another, without the agent.
     Sh {
-        command: String,
+        commands: Vec<String>,
         /// The crate mounted at /src and copied to /work.
         #[arg(long, default_value = "fixtures/tinycalc")]
         repo: PathBuf,
         #[arg(long, default_value = "bridge/toolbox.img")]
         toolbox: PathBuf,
-        #[arg(long = "allow-host")]
-        allow_hosts: Vec<String>,
+        #[command(flatten)]
+        policy: PolicyArgs,
     },
+}
+
+/// The sandbox's policy, from the command line.
+#[derive(Args)]
+struct PolicyArgs {
+    /// A host name the sandbox may look up and connect to (repeatable).
+    /// None by default: no network at all.
+    #[arg(long = "allow-host")]
+    allow_hosts: Vec<String>,
+    /// Seconds one command may run before it gets SIGKILL.
+    #[arg(long, default_value_t = 60)]
+    timeout_secs: u64,
+    /// Bytes one command may print before it gets SIGKILL.
+    #[arg(long, default_value_t = 1 << 20)]
+    max_output: usize,
+    /// The guest's memory, in MiB.
+    #[arg(long, default_value_t = 1024)]
+    memory_mib: u32,
+}
+
+impl From<PolicyArgs> for Policy {
+    fn from(args: PolicyArgs) -> Self {
+        Policy {
+            allowed_hosts: args.allow_hosts,
+            command_timeout: Duration::from_secs(args.timeout_secs),
+            max_output_bytes: args.max_output,
+            memory_mib: args.memory_mib,
+        }
+    }
 }
 
 #[tokio::main]
@@ -78,18 +105,22 @@ async fn main() -> Result<()> {
     match Cli::parse().command {
         Cmd::Canary { port } => canary::listen(port),
         Cmd::Sh {
-            command,
+            commands,
             repo,
             toolbox,
-            allow_hosts,
+            policy,
         } => {
             check_toolbox(&toolbox)?;
-            let policy = Policy::new(allow_hosts);
             let mut sandbox =
-                sandbox::Sandbox::start(&repo, &toolbox, policy).await?;
-            let out = sandbox.run(&command).await?;
-            print!("{}", out.text);
-            println!("exit code: {:?}", out.exit_code);
+                sandbox::Sandbox::start(&repo, &toolbox, policy.into()).await?;
+            for command in commands {
+                println!("$ {command}");
+                let started = Instant::now();
+                let out = sandbox.run(&command).await?;
+                let secs = started.elapsed().as_secs_f32();
+                print!("{}", out.text);
+                println!("(exit code {:?}, {secs:.1} s)\n", out.exit_code);
+            }
             Ok(())
         }
         Cmd::Fix {
@@ -97,7 +128,7 @@ async fn main() -> Result<()> {
             toolbox,
             max_steps,
             on_host,
-            allow_hosts,
+            policy,
         } => {
             let key = std::env::var("OPENAI_API_KEY")
                 .context("OPENAI_API_KEY is not set")?;
@@ -110,10 +141,9 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
             check_toolbox(&toolbox)?;
-            let policy = Policy::new(allow_hosts);
             let started = Instant::now();
             let sandbox =
-                sandbox::Sandbox::start(&repo, &toolbox, policy).await?;
+                sandbox::Sandbox::start(&repo, &toolbox, policy.into()).await?;
             let ms = started.elapsed().as_millis();
             println!("sandbox ready in {ms} ms");
             let mut sandbox =

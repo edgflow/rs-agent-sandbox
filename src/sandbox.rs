@@ -2,10 +2,12 @@
 //! through the bridge (`bridge/bridge.mjs`). Lesson 3: the machine and the
 //! protocol. Lesson 4: the crate in (read-only), the work folder, the
 //! toolchain disk, and the changes back out. Lesson 5: every DNS question
-//! from the guest is answered here, by the policy.
+//! from the guest is answered here, by the policy. Lesson 6: every command
+//! carries its limits.
 
 use std::path::Path;
 use std::process::Stdio;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -19,9 +21,19 @@ use crate::policy::Policy;
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ToBridge<'a> {
-    Exec { id: u64, command: &'a str },
-    Changes { id: u64 },
-    Answer { question: u64, allow: bool },
+    Exec {
+        id: u64,
+        command: &'a str,
+        timeout_ms: u128,
+        max_output: usize,
+    },
+    Changes {
+        id: u64,
+    },
+    Answer {
+        question: u64,
+        allow: bool,
+    },
 }
 
 /// What the bridge sends back: answers to our requests (with their `id`),
@@ -80,6 +92,7 @@ impl Sandbox {
             .arg("bridge/bridge.mjs")
             .arg(krate.canonicalize()?)
             .arg(toolbox.canonicalize()?)
+            .arg(policy.memory_mib.to_string())
             // The bridge does not need our API key either: only PATH (to
             // find node) and HOME (where unkernel caches the Alpine image).
             .env_clear()
@@ -164,8 +177,21 @@ impl Sandbox {
 impl Executor for Sandbox {
     async fn run(&mut self, command: &str) -> Result<Output> {
         let id = self.fresh_id();
-        self.send(&ToBridge::Exec { id, command }).await?;
-        match self.answer(id).await? {
+        let timeout = self.policy.command_timeout;
+        self.send(&ToBridge::Exec {
+            id,
+            command,
+            timeout_ms: timeout.as_millis(),
+            max_output: self.policy.max_output_bytes,
+        })
+        .await?;
+        // The guest kills the command at `timeout`; this is for a bridge
+        // that stops answering at all. A late answer is ignored by its id.
+        let grace = timeout + Duration::from_secs(10);
+        let answer = tokio::time::timeout(grace, self.answer(id))
+            .await
+            .context("the bridge did not answer in time")??;
+        match answer {
             FromBridge::Result {
                 exit_code, output, ..
             } => Ok(Output {
